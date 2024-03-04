@@ -1,0 +1,19 @@
+--- Results --- 
+NTK RMSE = 5.12 
+Deep Ensemble RMSE: mean = 269.01, std = 253.67 
+Deep Ensemble NLL: mean = 68.40, std 115.83 
+
+ --- Training Details --- 
+NTK Learning Rate = 0.01 
+NTK Epochs = 1000 
+Deep Ensemble Learning Rate = 0.01 
+Deep Ensemble Epochs = 1000 
+Number of ensembles = 5 
+
+ --- NTK Method Details --- 
+Regularising constant = 26.16 
+Condition number of Kappa = 9757831.80 
+Number of negative eigenvalues of Kappa = 0 
+Number of zero eigenvalues of Kappa = 0 
+Number of negative values in NTK uncertainties array: 0 
+Number of zero values in NTK uncertainties array: 0 

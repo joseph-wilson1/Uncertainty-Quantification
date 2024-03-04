@@ -1,0 +1,19 @@
+--- Results --- 
+Final ntk training mse = 0.004 
+Final ntk test mse = 0.67 
+Deep Ensemble training mse: mean = 0.01, std = 0.01 
+Deep Ensemble test mse: mean = 1.10, std = 0.60 
+Deep Ensemble NLL: mean = 0.82, std 0.13 
+
+ --- Training Details --- 
+Learning Rate = 0.01 
+Training Epochs = 400 
+Number of ensembles = 5 
+
+ --- NTK Method Details --- 
+Regularising constant = 0.00 
+Condition number of Kappa = 255693473155194060800.00 
+Number of negative eigenvalues of Kappa = 246 
+Number of zero eigenvalues of Kappa = 0 
+Number of negative values in NTK uncertainties array: 0 
+Number of zero values in NTK uncertainties array: 0 

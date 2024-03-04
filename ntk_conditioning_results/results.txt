@@ -1,0 +1,13 @@
+2024-02-29 11:49:01.930692 
+Manual method: 
+                    Method time elapsed = 525.38 seconds
+                     Condition number = 543134236300158307401728.00, 
+                    Num negative eigvals = 84.00 
+                    Smallest eigval = -0.00. (1e-12)
+
+ PyTorch JAX method: 
+                    Method time elapsed = 0.04 seconds
+                     Condition number = 5151514857671273480192.00 
+                    Num negative eigvals = 86.00 
+                    Smallest eigval = -0.00. (1e-3)
+Frobenius norm difference between two methods = 0.00 (1e-12)

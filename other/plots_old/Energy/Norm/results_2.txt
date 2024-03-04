@@ -1,0 +1,15 @@
+--- Results --- 
+NTK RMSE = 1.79 
+Deep Ensemble RMSE: mean = 0.48, std = 0.04 
+Deep Ensemble NLL: mean = 0.56, std 0.05 
+
+ --- Training Details --- 
+NTK Learning Rate = 0.1 
+NTK Epochs = 400 
+Deep Ensemble Learning Rate = 0.01 
+Deep Ensemble Epochs = 1000 
+Number of ensembles = 5 
+
+ --- NTK Method Details --- 
+
+ Using CR.RTOL = 1e-9MaxIt = 100

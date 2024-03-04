@@ -1,0 +1,36 @@
+--- Dataset & Model --- 
+Number of training points = 927 
+Number of test points = 103 
+Number of features = 8 
+Number of hidden layers = 1 
+Width of hidden layer = 150 
+Number of parameters in NTK network = 1501 
+
+ --- Results --- 
+Final ntk training mse = 0.051 
+Final ntk test mse = 31.09 
+Deep Ensemble training mse: mean = 0.04, std = 0.01 
+Deep Ensemble test mse: mean = 30.07, std = 3.71 
+Deep Ensemble NLL: mean = 3.44, std 0.17 
+
+ --- Training Details --- 
+Learning Rate = 0.01 
+Training Epochs = 400 
+Number of ensembles = 5 
+
+ --- NTK Method Details --- 
+Condition number of Kappa = 725598408335301148672.00 
+Number of negative eigenvalues of Kappa = 154 
+Number of zero eigenvalues of Kappa = 0 
+
+ --- Uncertainty Solution Details --- 
+Type of linear solver = iterative 
+Time to solve all test examples = 2.08 seconds 
+Tolerance of solver = 1e-10 
+Max iteration of solver = 70 
+Average solver iter = 70.0 
+Average solver resid error = 0.00012233231179397213 
+Average solver matrix resid error = 6.587003834626143e-07 
+
+ Number of negative values in NTK uncertainties array: 0 
+Number of zero values in NTK uncertainties array: 0 

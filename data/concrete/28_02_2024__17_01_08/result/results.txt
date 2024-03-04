@@ -1,0 +1,21 @@
+--- Dataset & Model --- 
+Number of training points = 927 
+Number of test points = 103 
+Number of features = 8 
+Number of hidden layers = 1 
+Width of hidden layer = 50 
+Number of parameters in NTK network = 501 
+
+ --- Results --- 
+Final ntk training mse = 0.050 
+Final ntk test mse = 24.64 
+Deep Ensemble training mse: mean = 0.06, std = 0.01 
+Deep Ensemble test mse: mean = 29.21, std = 2.53 
+Deep Ensemble NLL: mean = 3.25, std 0.18 
+
+ --- Training Details --- 
+Learning Rate = 0.01 
+Training Epochs = 400 
+Number of ensembles = 5 
+
+ --- NTK Method Details --- 
