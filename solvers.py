@@ -205,6 +205,68 @@ def CR(A, b, rtol, init = False, x0 = 0, maxit = None, reO = True, VERBOSE=True)
         
     return xk, i, r, np.linalg.norm(r) / norm_r0, np.linalg.norm(Ar) / norm_Ar0
 
+def CR_torch(A, b, rtol, init = False, x0 = 0, maxit = None, reO = True, VERBOSE=True):
+    
+    if maxit is None:
+        maxit, _ = A.shape
+
+    if init:
+        xk = x0
+    else:
+        xk = torch.zeros_like(b, dtype = torch.float64)
+
+    def Avec(A, x):
+        if callable(A):
+            return A(x)
+        print("Avec: \n")
+        print("A is size {}".format(A.shape))
+        print("x is size {}".format(x.shape))
+        return torch.mv(A, x)
+    
+    r = b - Avec(A, xk)
+    norm_r0 = torch.norm(r)
+    Ar = Avec(A, r)
+    rAr = torch.dot(r, Ar)
+    # rAr = r.transpose() @ Ar
+    p = r.clone()
+    # p = np.copy(r)
+    Ap = Ar.clone()
+    # Ap = np.copy(Ar)
+    i, beta = 0, 0
+    
+    norm_Ar0 = torch.norm(Ap)
+    while i < maxit and torch.norm(Ar) / norm_Ar0 > rtol:
+        i += 1
+        # pAAp = torch.dot(Ap, Ap)
+        pAAp = Ap.transpose() @ Ap
+        
+        if VERBOSE:
+            print_stats(STAT, i, torch.norm(r) / norm_r0, torch.norm(Ar) / norm_Ar0)
+        
+        alpha = rAr / pAAp
+        
+        if rAr < 0:
+            print("NPC detected, it {}".format(i))
+            return xk, i, r, torch.norm(r) / norm_r0, torch.norm(Ar) / norm_Ar0
+        
+        xk = xk + alpha * p
+        r = r - alpha * Ap
+        Ar = Avec(A, r)
+        rArp = torch.dot(r, Ar)
+        # rArp = r.transpose() @ Ar
+        beta = rArp / rAr
+        p = r + beta * p
+        Ap = Ar + beta * Ap
+        
+        # update
+        rAr = rArp
+        
+    if VERBOSE:
+        print_stats(STAT, i + 1, torch.norm(r) / norm_r0, torch.norm(Ar) / norm_Ar0)
+        
+    return xk, i, r, torch.norm(r) / norm_r0, torch.norm(Ar) / norm_Ar0
+
+
 def Avec(A, x):
     if callable(A):
         return A(x)
