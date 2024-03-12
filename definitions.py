@@ -131,6 +131,23 @@ def optimizer_shared(model, type='adam', learning_rate=1e-1):
         return torch.optim.Adam(model.parameters(), lr = learning_rate)
     elif type=='sgd':
         return torch.optim.SGD(model.parameters(), lr = learning_rate)
+    
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = float('inf')
+
+    def early_stop(self, validation_loss):
+        if validation_loss < self.min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
 
 def training_loop_ntk(dataloader, model, optimizer, loss_function, verbose=False):
     model.train()
@@ -283,7 +300,7 @@ def MVP_JJT(v,model,X_training, optimizer):
     x2 = MVP_JX(x1,model,X_training, optimizer)
     return x2
 
-def ntk_uncertainty_explicit(Kappa, train_dataset, test_dataset, model, optimizer, type='direct', rtol=1e-9, maxit=50):
+def ntk_uncertainty_explicit(Kappa, train_dataset, test_dataset, model, optimizer, type='iterative', rtol=1e-9, maxit=50):
     uncertainty_array = np.empty((1,len(test_dataset)))
     solver_info = np.empty((3,len(test_dataset)))
     with tqdm(total=int(len(test_dataset))) as pbar:
@@ -363,7 +380,7 @@ def plot_calibration(observed_true_ntk, observed_true_ensemble, dataset_str, dir
     plt.plot(c,observed_true_ensemble, label='Deep Ensemble')
     plt.xlabel("Expected accuracy")
     plt.ylabel("Observed accuracy")
-    plt.title("Calibration curve - {} Dataset".format(dataset_str))
+    plt.title("Calibration curve".format(dataset_str))
     plt.legend()
     plt.savefig(dir_name + plot_name, format="pdf", bbox_inches="tight")
     plt.show()
@@ -693,98 +710,55 @@ def ntk_uncertainty_single_class(Kappa,train_dataset,test_x,model,c,rtol,maxit):
 
 
 def ntk_uncertainty_explicit_class(train_dataset, test_dataset, model, num_classes, type='direct', rtol=1e-9, maxit=50):
-    test_dataloader = DataLoader(test_dataset,len(test_dataset))
-    X_test,_ = next(iter(test_dataloader))
-
-    print("Test shape is {}".format(X_test.shape))
-
-    train_dataloader = DataLoader(train_dataset,len(train_dataset))
+    fnet, params = make_functional(model)    
     uncertainty_array = np.empty((num_classes,len(test_dataset)))
-    X_train,_ = next(iter(train_dataloader))
-    Kappa = empirical_ntk(
-                    model=model,
-                    dataset1=train_dataset,
-                    dataset2=train_dataset
-                )
-    # c = torch.arange(num_classes)
+    test_dataloader = DataLoader(test_dataset)
+    train_dataloader = DataLoader(train_dataset,len(train_dataset))
+    X_train,y_train = next(iter(train_dataloader))
 
-    def uncertainty_class(test_x,c):
-        return ntk_uncertainty_single_class(Kappa,X_train,test_x,model,c,rtol,maxit)
+    with tqdm(total=int(len(test_dataset)*num_classes)) as pbar:
+        for c in range(num_classes):
+            def fnet_single(params, x):
+                return fnet(params, x.unsqueeze(0)).squeeze(0)[c].reshape(1) 
+            
+            Kappa = empirical_ntk_jacobian_contraction(
+                fnet_single=fnet_single,
+                params=params,
+                x1=X_train,
+                x2=X_train
+                ).detach().numpy().squeeze((2,3))
     
-    # print(type(X_test))
-    # print(type(X_train))
-    print(X_train.shape)
-
-    for c in range(num_classes):
-        uncertainty_array = vmap(uncertainty_class,(0,None))(X_test,c)
-        break
-    # with tqdm(total=int(len(test_dataset)*num_classes)) as pbar:
-    #     for i,(x_test,_) in enumerate(test_dataloader):
-    #         for c in range(num_classes):
-    #             uncertainty_array[c,i] = ntk_uncertainty_single_class(
-    #                 Kappa=Kappa,
-    #                 train_dataset=X_train,
-    #                 test_x=x_test,
-    #                 model=model,
-    #                 c=c,
-    #                 rtol=rtol,
-    #                 maxit=maxit
-    #             )
-    #             pbar.update(1)
-
-
-    # fnet, params = make_functional(model)     
-    # def fnet_single(params, x):
-    #     return fnet(params, x.unsqueeze(0)).squeeze(0)
+            for i,(x_test,_) in enumerate(test_dataloader):
+                kappa_xx = empirical_ntk_jacobian_contraction(
+                    fnet_single=fnet_single,
+                    params=params,
+                    x1=x_test,
+                    x2=x_test
+                    ).detach().numpy().squeeze((2,3))
+                kappa_xX = empirical_ntk_jacobian_contraction(
+                    fnet_single=fnet_single,
+                    params=params,
+                    x1=x_test,
+                    x2=X_train
+                    ).detach().numpy().squeeze((2,3))
+                if type=='direct':
+                    uncertainty_estimate = kappa_xx - kappa_xX @ np.linalg.solve(Kappa,kappa_xX.transpose())
+                elif type=='iterative':
+                    x_solve, it, resid, rel_resid, rel_mat_resid = solvers.CR(
+                        Kappa,
+                        kappa_xX.transpose(),
+                        rtol=rtol,
+                        init=False, 
+                        maxit=maxit, 
+                        VERBOSE=False
+                        )
+                    # kappa_hat = lifted_solution(x_solve,resid)
+                    uncertainty_estimate = kappa_xx - kappa_xX @ x_solve
+                    # lifted_ue = kappa_xx - kappa_hat.transpose() @ Kappa @ kappa_hat
+                    # uncertainty_array_lift[0,i] = lifted_ue
+                uncertainty_array[c,i] = uncertainty_estimate
+                pbar.update(1)
     
-    # uncertainty_array = np.empty((num_classes,len(test_dataset)))
-    # test_dataloader = DataLoader(test_dataset,1)
-    # train_dataloader = DataLoader(train_dataset,len(train_dataset))
-    # X_train,_ = next(iter(train_dataloader))
-
-    # Kappa = empirical_ntk(
-    #                 model=model,
-    #                 dataset1=train_dataset,
-    #                 dataset2=train_dataset
-    #             ).detach().numpy()
-    # # Kappa = tensor_to_block_mat(Kappa).detach().numpy()
-    # # print(Kappa.shape)
-
-    # with tqdm(total=int(len(test_dataset)*num_classes)) as pbar:
-    #     for i,(x_test,_) in enumerate(test_dataloader):
-    #         kappa_xx = empirical_ntk_jacobian_contraction(
-    #                 fnet_single=fnet_single,
-    #                 params=params,
-    #                 x1=x_test,
-    #                 x2=x_test
-    #                 ).detach().numpy()
-    #         # kappa_xx = tensor_to_block_mat(kappa_xx).detach().numpy()
-    #         # print(kappa_xx.shape)
-    #         kappa_xX = empirical_ntk_jacobian_contraction(
-    #                 fnet_single=fnet_single,
-    #                 params=params,
-    #                 x1=x_test,
-    #                 x2=X_train
-    #                 ).detach().numpy()
-    #         # kappa_xX = tensor_to_block_mat(kappa_xX).detach().numpy()
-    #         # print(kappa_xX.shape)
-
-    #         for c in range(num_classes):
-    #             if type=='direct':
-    #                 uncertainty_estimate = kappa_xx - kappa_xX @ np.linalg.solve(Kappa,kappa_xX.transpose())
-    #             elif type=='iterative':
-    #                 x_solve, _, resid, _, _ = solvers.CR(
-    #                     Kappa[:,:,c,c],
-    #                     kappa_xX[:,:,c,c].transpose(),
-    #                     rtol=rtol,
-    #                     init=False, 
-    #                     maxit=maxit, 
-    #                     VERBOSE=False
-    #                     )
-    #                 x_solve = lifted_solution(x_solve,resid)
-    #                 uncertainty_estimate = kappa_xx[:,:,c,c] - kappa_xX[:,:,c,c] @ x_solve
-    #             uncertainty_array[c,i] = uncertainty_estimate
-    #         pbar.update(1)
     return uncertainty_array
 
 def ntk_uncertainty_explicit_c(Kappa,train_dataset,test_dataset,model,optimizer,class_c,type='direct',rtol=1e-6,maxit=50):
@@ -841,7 +815,6 @@ def empirical_ntk_jacobian_contraction_c(fnet_single, params, x1, x2,c):
         # Compute J(x1)
         jac1 = vmap(jacrev(fnet_single), (None, 0))(params, x1)
         jac1 = [j[:,c,:].flatten(1) for j in jac1]
-        print(jac1[0].shape)
 
         # Compute J(x2)
         jac2 = vmap(jacrev(fnet_single), (None, 0))(params, x2)
