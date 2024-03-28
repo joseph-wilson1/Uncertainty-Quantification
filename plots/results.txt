@@ -1,0 +1,10 @@
+Method: NTK 
+ Acc: 97.0%, NLL: 0.175, ECE: 0.043
+Method: NTK Posterior Predictive 
+ Acc: 94.0%, NLL: 0.203, ECE: 0.027
+Method: Deep Ensemble 
+ Acc: 98.0%, NLL: 0.103, ECE: 0.025
+Method: MC-Dropout 
+ Acc: 96.0%, NLL: 0.078, ECE: 0.031
+Method: Temp-Scaling 
+ Acc: 98.0%, NLL: 0.090, ECE: 0.043

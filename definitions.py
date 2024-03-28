@@ -16,7 +16,8 @@ import solvers
 importlib.reload(solvers)
 from scipy.sparse.linalg import LinearOperator
 from tqdm import tqdm
-from functorch import make_functional, vmap, vjp, jvp, jacrev
+from torch.func import vmap, jacrev
+from functorch import make_functional
 
 torch.set_default_dtype(torch.float64)
 
@@ -407,11 +408,14 @@ class CNN(nn.Module):
         # x = self.fc3(x)
         return x    
 
-def train_loop(dataloader, model, loss_fn, optimizer, verbose=False):
+def train_loop(dataloader, model, loss_fn, optimizer, verbose=False, train_mode=True):
     size = len(dataloader.dataset)
     # Set the model to training mode - important for batch normalization and dropout layers
     # Unnecessary in this situation but added for best practices
-    model.train()
+    if train_mode:
+        model.train()
+    else:
+        model.eval()
     total_loss = 0
     for batch, (X, y) in enumerate(dataloader):
         # Compute prediction and loss
@@ -709,17 +713,36 @@ def ntk_uncertainty_single_class(Kappa,train_dataset,test_x,model,c,rtol,maxit):
     return sigma2
 
 
-def ntk_uncertainty_explicit_class(train_dataset, test_dataset, model, num_classes, type='direct', rtol=1e-9, maxit=50):
+def ntk_uncertainty_explicit_class(train_dataset, test_dataset, model, num_classes, type='direct', rtol=1e-9, maxit=50,softmax=False):
     fnet, params = make_functional(model)    
     uncertainty_array = np.empty((num_classes,len(test_dataset)))
+    mu = np.empty((num_classes,len(test_dataset)))
     test_dataloader = DataLoader(test_dataset)
     train_dataloader = DataLoader(train_dataset,len(train_dataset))
     X_train,y_train = next(iter(train_dataloader))
 
+    ### One hot for brier loss
+    def one_hot(y,num_classes):
+        yh = torch.zeros((y.shape[0],num_classes),dtype=torch.float64)
+        yh[torch.arange(y.shape[0]),y] = 1
+        return yh
+
+    if softmax:
+        f_train = model(X_train).softmax(dim=1)
+        y_train = one_hot(y_train,num_classes=num_classes)
+    else:
+        f_train = model(X_train)
+        y_train = one_hot(y_train,num_classes=num_classes)
+    resid_hat = (y_train - f_train).detach().numpy()
+
     with tqdm(total=int(len(test_dataset)*num_classes)) as pbar:
         for c in range(num_classes):
             def fnet_single(params, x):
-                return fnet(params, x.unsqueeze(0)).squeeze(0)[c].reshape(1) 
+                if softmax:
+                    f = fnet(params, x.unsqueeze(0)).squeeze(0).softmax(dim=0)[c].reshape(1) 
+                else:
+                    f = fnet(params, x.unsqueeze(0)).squeeze(0)[c].reshape(1) 
+                return f
             
             Kappa = empirical_ntk_jacobian_contraction(
                 fnet_single=fnet_single,
@@ -752,14 +775,18 @@ def ntk_uncertainty_explicit_class(train_dataset, test_dataset, model, num_class
                         maxit=maxit, 
                         VERBOSE=False
                         )
+                    
                     # kappa_hat = lifted_solution(x_solve,resid)
                     uncertainty_estimate = kappa_xx - kappa_xX @ x_solve
                     # lifted_ue = kappa_xx - kappa_hat.transpose() @ Kappa @ kappa_hat
                     # uncertainty_array_lift[0,i] = lifted_ue
+                    fx = model(x_test)
+                    mu_x = x_solve.transpose() @ resid_hat[:,c].reshape((-1,1)) + fx.detach().numpy().squeeze(0)[c]
                 uncertainty_array[c,i] = uncertainty_estimate
+                mu[c,i] = mu_x
                 pbar.update(1)
     
-    return uncertainty_array
+    return uncertainty_array, mu
 
 def ntk_uncertainty_explicit_c(Kappa,train_dataset,test_dataset,model,optimizer,class_c,type='direct',rtol=1e-6,maxit=50):
     uncertainty_array = np.empty((1,len(test_dataset)))
