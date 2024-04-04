@@ -205,8 +205,14 @@ def CR(A, b, rtol, init = False, x0 = 0, maxit = None, reO = True, VERBOSE=True)
         
     return xk, i, r, np.linalg.norm(r) / norm_r0, np.linalg.norm(Ar) / norm_Ar0
 
-def CR_torch(A, b, rtol, init = False, x0 = 0, maxit = None, reO = True, VERBOSE=True):
-    
+def CR_torch(A, b, rtol, init = False, x0 = 0, maxit = None, VERBOSE=True):
+    '''
+    INPUT:
+        A: square nxn matrix
+        b: coloumn vector size (n)
+    '''
+
+
     if maxit is None:
         maxit, _ = A.shape
 
@@ -215,30 +221,28 @@ def CR_torch(A, b, rtol, init = False, x0 = 0, maxit = None, reO = True, VERBOSE
     else:
         xk = torch.zeros_like(b, dtype = torch.float64)
 
+
     def Avec(A, x):
         if callable(A):
             return A(x)
-        print("Avec: \n")
-        print("A is size {}".format(A.shape))
-        print("x is size {}".format(x.shape))
-        return torch.mv(A, x)
+        # print("Avec: \n")
+        # print("A is size {}".format(A.shape))
+        # print("x is size {}".format(x.shape))
+        return torch.matmul(A, x)
     
     r = b - Avec(A, xk)
     norm_r0 = torch.norm(r)
     Ar = Avec(A, r)
     rAr = torch.dot(r, Ar)
-    # rAr = r.transpose() @ Ar
     p = r.clone()
-    # p = np.copy(r)
     Ap = Ar.clone()
-    # Ap = np.copy(Ar)
     i, beta = 0, 0
     
     norm_Ar0 = torch.norm(Ap)
     while i < maxit and torch.norm(Ar) / norm_Ar0 > rtol:
         i += 1
-        # pAAp = torch.dot(Ap, Ap)
-        pAAp = Ap.transpose() @ Ap
+        pAAp = torch.dot(Ap, Ap)
+        # pAAp = Ap.transpose() @ Ap
         
         if VERBOSE:
             print_stats(STAT, i, torch.norm(r) / norm_r0, torch.norm(Ar) / norm_Ar0)
@@ -253,6 +257,7 @@ def CR_torch(A, b, rtol, init = False, x0 = 0, maxit = None, reO = True, VERBOSE
         r = r - alpha * Ap
         Ar = Avec(A, r)
         rArp = torch.dot(r, Ar)
+        # rArp = torch.matmul(r.transpose(0,1),Ar)
         # rArp = r.transpose() @ Ar
         beta = rArp / rAr
         p = r + beta * p

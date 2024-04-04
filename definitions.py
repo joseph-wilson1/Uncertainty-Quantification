@@ -12,12 +12,16 @@ import torch.nn.functional as F
 import time
 import datetime
 import os
-import solvers
-importlib.reload(solvers)
-from scipy.sparse.linalg import LinearOperator
+import solvers as solv
+from importlib import reload
+
+reload(solv)
+
+importlib.reload(solv)
+from scipy.sparse.linalg import LinearOperator, lsmr
 from tqdm import tqdm
 from torch.func import vmap, jacrev
-from functorch import make_functional
+from functorch import make_functional, make_functional_with_buffers
 
 torch.set_default_dtype(torch.float64)
 
@@ -312,7 +316,7 @@ def ntk_uncertainty_explicit(Kappa, train_dataset, test_dataset, model, optimize
             if type=='direct':
                 uncertainty_estimate = kappa_xx - kappa_xX @ np.linalg.solve(Kappa,kappa_xX.transpose())
             elif type=='iterative':
-                x_solve, it, resid, rel_resid, rel_mat_resid = solvers.CR(Kappa,kappa_xX.transpose(),rtol=rtol,init=False, maxit=maxit, VERBOSE=False)
+                x_solve, it, resid, rel_resid, rel_mat_resid = solv.CR(Kappa,kappa_xX.transpose(),rtol=rtol,init=False, maxit=maxit, VERBOSE=False)
                 x_solve = lifted_solution(x_solve,resid)
                 uncertainty_estimate = kappa_xx - kappa_xX @ x_solve
                 solver_info[0,i] = it
@@ -566,7 +570,7 @@ def ntk_uncertainty_classification(train_dataset, test_dataset, model, optimizer
                 mvp = lambda v : MVP_JJT_c(v=v,model=model,X_training=train_dataset,optimizer=optimizer,c = c)
                 A = LinearOperator((len(train_dataset),len(train_dataset)), matvec=mvp)
                 b = kappa_xX
-                x,_,_,_,_ = solvers.CR(A,b,rtol=1e-7,maxit=50,VERBOSE=False)
+                x,_,_,_,_ = solv.CR(A,b,rtol=1e-7,maxit=50,VERBOSE=False)
                 kappa_xx = ntk_single_c(xi,xi,model,optimizer,c)
                 uq = kappa_xx - b.transpose() @ x
                 pbar.update(1)
@@ -584,7 +588,7 @@ def ntk_uncertainty_classification_single(train_dataset, test_point_x, model, op
             mvp = lambda v : MVP_JJT_c(v=v,model=model,X_training=train_dataset,optimizer=optimizer,c = c)
             A = LinearOperator((len(train_dataset),len(train_dataset)), matvec=mvp)
             b = kappa_xX
-            x,_,_,_,_ = solvers.CR(A,b,rtol=1e-7,maxit=50,VERBOSE=False)
+            x,_,_,_,_ = solv.CR(A,b,rtol=1e-7,maxit=50,VERBOSE=False)
             kappa_xx = ntk_single_c(test_point_x,test_point_x,model,optimizer,c)
             uq = kappa_xx - b.transpose() @ x
             uncertainty_array[0,i] = uq
@@ -610,7 +614,7 @@ def ntk_uncertainty_explicit(Kappa, train_dataset, test_dataset, model, type='di
     x_hat = model(X_train)
     resid_array = torch.reshape(y_train,(-1,1)) - x_hat
     print("Norm of residual array (y-f) = {}".format(torch.norm(resid_array)))
-    resid_solve,_,_,_,_ = solvers.CR(
+    resid_solve,_,_,_,_ = solv.CR(
         Kappa,
         resid_array.detach().numpy(),
         rtol=rtol,
@@ -643,7 +647,7 @@ def ntk_uncertainty_explicit(Kappa, train_dataset, test_dataset, model, type='di
             if type=='direct':
                 uncertainty_estimate = kappa_xx - kappa_xX @ np.linalg.solve(Kappa,kappa_xX.transpose())
             elif type=='iterative':
-                x_solve, it, resid, rel_resid, rel_mat_resid = solvers.CR(
+                x_solve, it, resid, rel_resid, rel_mat_resid = solv.CR(
                     Kappa,
                     kappa_xX.transpose(),
                     rtol=rtol,
@@ -699,7 +703,7 @@ def ntk_uncertainty_single_class(Kappa,train_dataset,test_x,model,c,rtol,maxit):
     print("Before solver kappa {}".format(Kappa[:,:,c,c].shape))
     print("Before solver kappa_xX {}".format(kappa_xX.transpose(0,1).shape))
 
-    x_solve, _, resid, _, _ = solvers.CR_torch(
+    x_solve, _, resid, _, _ = solv.CR_torch(
                         Kappa[:,:,c,c],
                         kappa_xX.transpose(0,1).squeeze(1),
                         rtol=rtol,
@@ -711,6 +715,223 @@ def ntk_uncertainty_single_class(Kappa,train_dataset,test_x,model,c,rtol,maxit):
     x_solve = lifted_solution(x_solve,resid)
     sigma2 = kappa_xx - kappa_xX @ x_solve
     return sigma2
+
+
+def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_direct', batch_size: int = 0):
+    '''
+    Calculates mu,sigma2 for all points in test, for model trained on train set.
+
+    solver options:
+     - 'direct_direct'
+     - 'direct_iterative'
+     - 'iterative_iterative_cr'
+     - 'iterative_iterative_lsmr'
+    '''
+    ### Solver constants
+    lsmr_maxit = 30
+    cr_maxit = 100
+    cr_rtol = 1e-12
+
+    ### Model info/fnet
+    fnet, params, buffers = make_functional_with_buffers(model)
+    num_weights = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    ### Set up storage
+    sigma2 = torch.empty((len(test),num_class))
+    mu = torch.empty((len(test),num_class))
+
+    ### Datasets and DataLoaders
+    test_loader = DataLoader(test,1)
+    train_loader = DataLoader(train,len(train))
+    train_loader_individual = DataLoader(train,1)
+    train_x,train_y = next(iter(train_loader))
+    
+    ### Residual (y-f) for mu
+    train_y = one_hot(train_y,num_classes=num_class)
+    train_y_hat = model(train_x)
+    train_residual = train_y - train_y_hat
+
+    with tqdm(total=int(len(test)*num_class)) as pbar:
+        ### Directly form Kappa
+        if solver == 'direct_direct' or solver == 'direct_iterative':
+            for c in range(num_class):
+                ### Take class c from output of model
+                def fnet_single(params, x):
+                    return fnet(params, buffers, x.unsqueeze(0)).squeeze(0)[c].reshape(1)
+                
+                ### Form kappa
+                Kappa = empirical_ntk(fnet_single,params,train,train,batch_size).detach()
+
+                for i,(x_t,_) in enumerate(test_loader):
+                    ### Form small kappas
+                    kappa_xX = empirical_ntk(fnet_single,params,train,x_t,batch_size).detach()
+                    kappa_xx = empirical_ntk(fnet_single,params,x_t,x_t,batch_size).detach()
+
+                    ### Directly solve K^-1
+                    if solver == 'direct_direct':
+                        Kappa_solve = torch.linalg.solve(Kappa, kappa_xX)
+
+                    ### Iteratively solve K^-1 kappa_xX
+                    elif solver == 'direct_iterative':
+                        Kappa_solve,_,_,_,_ = solv.CR_torch(Kappa,kappa_xX.reshape(-1),rtol=1e-12,VERBOSE=False)
+
+                    ### Uncertainty value
+                    sigma2_i = kappa_xx - kappa_xX.reshape(1,-1) @ Kappa_solve.reshape(-1,1)
+                    sigma2[i,c] = sigma2_i
+
+                    ### Mean value
+                    mu_i = Kappa_solve.reshape(1,-1) @ train_residual[:,c].reshape(-1,1) + model(x_t).squeeze(0)[c]
+                    mu[i,c] = mu_i
+
+                    ### Update progress bar
+                    pbar.update(1)
+        
+        ### Don't directly form Kappa - use MVP
+        if solver == 'iterative_iterative_cr' or solver == 'iterative_iterative_lsmr':
+            for c in range(num_class):
+                ### Take class c from output of model
+                def fnet_single(params, x):
+                    return fnet(params, buffers, x.unsqueeze(0)).squeeze(0)[c].reshape(1)
+                
+                ### Define MVPs for fnet(c)
+                Ax = lambda x: JTw(x,fnet_single,params,train_loader_individual)
+                ATx = lambda x: Jw(x,fnet_single,params,train_x)
+                Kappa = lambda x: ATx(Ax(x))
+
+                ### LinearOperator for use with scipy.linalg.lsmr
+                A = LinearOperator((num_weights,len(train)),matvec=Ax,rmatvec=ATx)
+
+                for i,(x_t,_) in enumerate(test_loader):
+                    ### Form small kappas
+                    kappa_xx = empirical_ntk(fnet_single,params,x_t,x_t,batch_size).detach()
+                    kappa_xX = empirical_ntk(fnet_single,params,train,x_t,batch_size).detach()
+
+                    ### Iteratively solve K^-1 kappa_xX using MVP and lsmr
+                    if solver == 'iterative_iterative_lsmr':
+                        ### b = grad_f(test_point)
+                        b = grad_f(x_t,fnet_single,params).cpu().detach().numpy() #lsmr is a numpy function, must cast to numpy
+                        Kappa_solve = lsmr(A,b,show=False,maxiter=lsmr_maxit)
+                        Kappa_solve = torch.from_numpy(Kappa_solve[0]).detach()
+
+                    ### Iteratively solve K^-1 kappa_xX using MVP and CR
+                    elif solver == 'iterative_iterative_cr':
+                        Kappa_solve = solv.CR_torch(Kappa,kappa_xX.reshape(-1),rtol=cr_rtol,maxit=cr_maxit,VERBOSE=False)
+                        Kappa_solve = Kappa_solve[0]
+
+                    ### Uncertainty value
+                    sigma2_i = kappa_xx - kappa_xX.reshape(1,-1) @ Kappa_solve.reshape(-1,1)
+                    sigma2[i,c] = sigma2_i
+
+                    ### Mean value
+                    mu_i = Kappa_solve.reshape(1,-1) @ train_residual[:,c].reshape(-1,1) + model(x_t).squeeze(0)[c]
+                    mu[i,c] = mu_i
+
+                    ### Update progress bar
+                    pbar.update(1)
+
+    return mu, sigma2
+
+def one_hot(y,num_classes):
+        yh = torch.zeros((y.shape[0],num_classes),dtype=torch.float64)
+        yh[torch.arange(y.shape[0]),y] = 1
+        return yh
+
+def grad_f(x,fnet_single,params):
+    '''
+    Function to calculate gradient of net, evaluated at x, and reshape into list of size p x 1.
+
+    Input:
+        - x: list of torch.tensor.
+
+    OUTPUT:
+        - gf: gradient vector size (p)
+    '''
+    gf = torch.cat([gfi.reshape(-1) for gfi in jacrev(fnet_single)(params,x)]).detach()
+    return gf
+
+def JTw(x,fnet_single,params,training_loader):
+    '''
+    Function to calculate the MVP J^T(training_data,net) w, where J is len(training_data) x p, and w is n x 1 (p).
+
+    Input:
+        - x: numpy_array or torch.tensor, size len(training_data)
+        - fnet_single
+        - params
+        - training_loader: DataLoader of training data, batch_size=1
+    '''
+    m = type(x).__module__
+    if m == np.__name__:
+        x = torch.from_numpy(x)
+    jtw = 0
+    for i,(y,_) in enumerate(training_loader):
+        jtw += grad_f(y,fnet_single,params)*x[i]
+    if m == np.__name__:
+        jtw = jtw.cpu().detach().numpy()
+    return jtw
+
+def Jw(x,fnet_single,params,training_data):
+    '''
+    Function to calculate the MVP J(training_data,net) w, where J is len(training_data) x p, and w is p x 1 (p).
+
+    Input:
+        - x: numpy_array or torch.tensor, size p (num_params)
+        - fnet_single
+        - params
+        - training_data: list of training data
+    '''
+    m = type(x).__module__
+    if m == np.__name__:
+        x = torch.from_numpy(x)
+    gfw = lambda y : torch.dot(grad_f(y,fnet_single,params),x)
+    jw = vmap(gfw)(training_data)
+    if m == np.__name__:
+        jw = jw.cpu().detach().numpy()
+    return jw
+
+def empirical_ntk(fnet_single, params, x1, x2, batch_size=0):
+    '''
+    INPUT:
+        - fnet_single: must be function form of single-output NN
+        - params:
+        - x1: either a torch.dataset/torch.subset type or a list containing a single torch.tensor
+        - x2: either a torch.dataset/torch.subset type or a list containing a single torch.tensor
+        - batch_size: (int) size of dataset to calculate eNTK in parallel. Larger values take more storage, lower values take longer to calculate
+
+    OUTPUT:
+        - eNTK: torch.tensor of size len(x1) x len(x2).
+    '''
+
+    if batch_size==0:
+        batch_size_1 = len(x1)
+        batch_size_2 = len(x2)
+    else:
+        batch_size_1 = min(batch_size, len(x1))
+        batch_size_2 = min(batch_size, len(x2))
+    if len(x1) == 1:
+        x1_loader = x1
+    else:
+        x1_loader = DataLoader(x1,batch_size_1)
+    if len(x2) == 1:
+        x2_loader = x2
+    else:
+        x2_loader = DataLoader(x2,batch_size_2)
+
+    idx,idy = 0,0
+    eNTK = torch.empty((len(x1),len(x2)))
+    for i1,x1_batch in enumerate(x1_loader):
+        if len(x1_batch)>1:
+            x1_batch,_ = x1_batch
+        for i2,x2_batch in enumerate(x2_loader):
+            if len(x2_batch)>1:
+                x2_batch, _ = x2_batch
+            
+            eNTK_batch = empirical_ntk_jacobian_contraction(fnet_single, params, x1_batch, x2_batch).squeeze((2,3))
+            eNTK_shape = eNTK_batch.shape
+            eNTK[idx:idx+eNTK_shape[0], idy:idy+eNTK_shape[1]] = eNTK_batch
+            idy += eNTK_shape[1]
+        idx += eNTK_shape[0]
+        idy = 0
+    return eNTK
 
 
 def ntk_uncertainty_explicit_class(train_dataset, test_dataset, model, num_classes, type='direct', rtol=1e-9, maxit=50,softmax=False):
@@ -767,7 +988,7 @@ def ntk_uncertainty_explicit_class(train_dataset, test_dataset, model, num_class
                 if type=='direct':
                     uncertainty_estimate = kappa_xx - kappa_xX @ np.linalg.solve(Kappa,kappa_xX.transpose())
                 elif type=='iterative':
-                    x_solve, it, resid, rel_resid, rel_mat_resid = solvers.CR(
+                    x_solve, it, resid, rel_resid, rel_mat_resid = solv.CR(
                         Kappa,
                         kappa_xX.transpose(),
                         rtol=rtol,
@@ -798,7 +1019,7 @@ def ntk_uncertainty_explicit_c(Kappa,train_dataset,test_dataset,model,optimizer,
             if type=='direct':
                 uncertainty_estimate = kappa_xx - kappa_xX @ np.linalg.solve(Kappa,kappa_xX.transpose())
             elif type=='iterative':
-                x_solve,_,_,_,_ = solvers.CR(Kappa,kappa_xX.transpose(),rtol=rtol,init=False, maxit=maxit, VERBOSE=False)
+                x_solve,_,_,_,_ = solv.CR(Kappa,kappa_xX.transpose(),rtol=rtol,init=False, maxit=maxit, VERBOSE=False)
                 uncertainty_estimate = kappa_xx - kappa_xX @ x_solve
             uncertainty_array[0,i] = uncertainty_estimate
             pbar.update(1)
@@ -852,31 +1073,31 @@ def empirical_ntk_jacobian_contraction_c(fnet_single, params, x1, x2,c):
         result = result.sum(0)
         return result 
 
-def empirical_ntk(model,dataset1,dataset2):
-    '''
-    Calculates the empirical ntk, which is the Jacobian(model,x1)@Jacobian(model,x2)^T.
+# def empirical_ntk(model,dataset1,dataset2):
+#     '''
+#     Calculates the empirical ntk, which is the Jacobian(model,x1)@Jacobian(model,x2)^T.
 
-        Parameters:
-            model (PyTorch Model): Neural Network
-            dataset1 (torch.dataset): Object of class dataset, must output torch variables
-            dataset2 (torch.dataset): Object of class dataset, must output torch variables
+#         Parameters:
+#             model (PyTorch Model): Neural Network
+#             dataset1 (torch.dataset): Object of class dataset, must output torch variables
+#             dataset2 (torch.dataset): Object of class dataset, must output torch variables
 
-        Returns:
-            Kappa (Torch.array): Matrix of size (N1 x N2 x C x C), where N1 = len(dataset1),
-                                N2 = len(dataset2), C = size(model(xi)).
-    '''
-    fnet, params = make_functional(model)     
+#         Returns:
+#             Kappa (Torch.array): Matrix of size (N1 x N2 x C x C), where N1 = len(dataset1),
+#                                 N2 = len(dataset2), C = size(model(xi)).
+#     '''
+#     fnet, params = make_functional(model)     
 
-    def fnet_single(params, x):
-        return fnet(params, x.unsqueeze(0)).squeeze(0) 
+#     def fnet_single(params, x):
+#         return fnet(params, x.unsqueeze(0)).squeeze(0) 
 
-    dataset1_ntk = DataLoader(dataset1,len(dataset1))
-    x1_ntk,_ = next(iter(dataset1_ntk))
-    dataset2_ntk = DataLoader(dataset2,len(dataset2))
-    x2_ntk,_ = next(iter(dataset2_ntk))
+#     dataset1_ntk = DataLoader(dataset1,len(dataset1))
+#     x1_ntk,_ = next(iter(dataset1_ntk))
+#     dataset2_ntk = DataLoader(dataset2,len(dataset2))
+#     x2_ntk,_ = next(iter(dataset2_ntk))
 
-    Kappa = empirical_ntk_jacobian_contraction(fnet_single, params, x1_ntk, x2_ntk)
-    return Kappa
+#     Kappa = empirical_ntk_jacobian_contraction(fnet_single, params, x1_ntk, x2_ntk)
+#     return Kappa
 
 def lifted_solution(x,r):
     x = x - ((r.transpose() @ x) / np.linalg.norm(r)) * r
