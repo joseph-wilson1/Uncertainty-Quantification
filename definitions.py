@@ -717,7 +717,7 @@ def ntk_uncertainty_single_class(Kappa,train_dataset,test_x,model,c,rtol,maxit):
     return sigma2
 
 
-def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_direct', batch_size: int = 0):
+def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_direct', batch_size: int = 0, cr_maxit: int = 100, cr_rtol: float = 1e-12, lsmr_maxit: int = 30):
     '''
     Calculates mu,sigma2 for all points in test, for model trained on train set.
 
@@ -727,11 +727,6 @@ def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_di
      - 'iterative_iterative_cr'
      - 'iterative_iterative_lsmr'
     '''
-    ### Solver constants
-    lsmr_maxit = 30
-    cr_maxit = 100
-    cr_rtol = 1e-12
-
     ### Model info/fnet
     fnet, params, buffers = make_functional_with_buffers(model)
     num_weights = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -795,7 +790,7 @@ def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_di
                 
                 ### Define MVPs for fnet(c)
                 Ax = lambda x: JTw(x,fnet_single,params,train_loader_individual)
-                ATx = lambda x: Jw(x,fnet_single,params,train_x)
+                ATx = lambda x: Jw(x,fnet_single,params,train_loader_individual)
                 Kappa = lambda x: ATx(Ax(x))
 
                 ### LinearOperator for use with scipy.linalg.lsmr
@@ -804,7 +799,7 @@ def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_di
                 for i,(x_t,_) in enumerate(test_loader):
                     ### Form small kappas
                     kappa_xx = empirical_ntk(fnet_single,params,x_t,x_t,batch_size).detach()
-                    kappa_xX = empirical_ntk(fnet_single,params,train,x_t,batch_size).detach()
+                    kappa_xX = ATx(grad_f(x_t,fnet_single,params)) # we form this way as using empirical_ntk takes 8 * n * p bytes.
 
                     ### Iteratively solve K^-1 kappa_xX using MVP and lsmr
                     if solver == 'iterative_iterative_lsmr':
@@ -815,7 +810,7 @@ def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_di
 
                     ### Iteratively solve K^-1 kappa_xX using MVP and CR
                     elif solver == 'iterative_iterative_cr':
-                        Kappa_solve = solv.CR_torch(Kappa,kappa_xX.reshape(-1),rtol=cr_rtol,maxit=cr_maxit,VERBOSE=False)
+                        Kappa_solve = solv.CR_torch(Kappa,kappa_xX.reshape(-1),rtol=cr_rtol,maxit=cr_maxit,VERBOSE=True)
                         Kappa_solve = Kappa_solve[0]
 
                     ### Uncertainty value
@@ -869,7 +864,7 @@ def JTw(x,fnet_single,params,training_loader):
         jtw = jtw.cpu().detach().numpy()
     return jtw
 
-def Jw(x,fnet_single,params,training_data):
+def Jw(x,fnet_single,params,training_loader):
     '''
     Function to calculate the MVP J(training_data,net) w, where J is len(training_data) x p, and w is p x 1 (p).
 
@@ -877,13 +872,15 @@ def Jw(x,fnet_single,params,training_data):
         - x: numpy_array or torch.tensor, size p (num_params)
         - fnet_single
         - params
-        - training_data: list of training data
+        - training_loader: DataLoader of training data, batch_size=1
     '''
     m = type(x).__module__
     if m == np.__name__:
         x = torch.from_numpy(x)
     gfw = lambda y : torch.dot(grad_f(y,fnet_single,params),x)
-    jw = vmap(gfw)(training_data)
+    jw = torch.empty((len(training_loader)))
+    for i,(y,_) in enumerate(training_loader):
+        jw[i] = gfw(y)
     if m == np.__name__:
         jw = jw.cpu().detach().numpy()
     return jw
