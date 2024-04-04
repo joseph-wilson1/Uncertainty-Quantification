@@ -717,7 +717,7 @@ def ntk_uncertainty_single_class(Kappa,train_dataset,test_x,model,c,rtol,maxit):
     return sigma2
 
 
-def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_direct', batch_size: int = 0, cr_maxit: int = 100, cr_rtol: float = 1e-12, lsmr_maxit: int = 30):
+def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_direct', batch_size: int = 0, softmax: bool = False, cr_maxit: int = 100, cr_rtol: float = 1e-12, lsmr_maxit: int = 30):
     '''
     Calculates mu,sigma2 for all points in test, for model trained on train set.
 
@@ -743,7 +743,10 @@ def ntk_method(train, test, model, num_class: int = 10, solver: str = 'direct_di
     
     ### Residual (y-f) for mu
     train_y = one_hot(train_y,num_classes=num_class)
-    train_y_hat = model(train_x)
+    if softmax:
+        train_y_hat = model(train_x).softmax(dim=1)
+    else:
+        train_y_hat = model(train_x)
     train_residual = train_y - train_y_hat
 
     with tqdm(total=int(len(test)*num_class)) as pbar:
